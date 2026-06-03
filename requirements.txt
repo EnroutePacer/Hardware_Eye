@@ -1,0 +1,16 @@
+torch>=2.0
+torchvision>=0.15
+diffusers>=0.28
+transformers>=4.30
+accelerate>=0.20
+safetensors>=0.3
+huggingface_hub>=0.16
+psutil
+py-cpuinfo
+pillow
+numpy
+pyyaml
+tqdm
+beautifulsoup4
+ftfy
+platform

@@ -1,0 +1,39 @@
+model:
+  pretrained_transformer: "models\\pixart_sigma\\transformer"
+  vae_path: "models\\pixart_sigma\\vae"
+  checkpoint: "checkpoints\\hardware_eye_step_latest.pt"
+
+diffusion:
+  train_timesteps: 1000
+
+train:
+  landscape_dir: "data\\landscape"
+  abstract_dir: "data\\abstract"
+  resolution: 1024
+  batch_size: 1
+  num_steps: 80000
+  lr: 0.0001
+  gradient_accumulation: 4
+  save_every: 2000
+  output_dir: "checkpoints"
+  num_workers: 2
+  color_loss_weight: 0.3
+  jitter: 0.08
+  mixed_precision: "no"
+
+benchmark:
+  ref_time: 0.08
+  repeats: 3
+  steps: 100
+  latent_size: 128
+
+generate:
+  seed: 42
+  output_dir: "outputs"
+  min_res: 512
+  max_res: 1024
+  min_steps: 10
+  max_steps: 50
+  jitter_low: 0.02
+  jitter_mid: 0.05
+  jitter_high: 0.1
