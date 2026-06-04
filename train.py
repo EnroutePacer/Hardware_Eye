@@ -27,6 +27,21 @@ _FALLBACK_BRAND = "unknown"
 IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp", ".bmp")
 
 
+def unpack_cache_entry(entry):
+    if isinstance(entry, torch.Tensor):
+        return entry, None
+    embeds = entry.get("prompt_embeds")
+    if embeds is None:
+        embeds = entry.get("embeds")
+    if embeds is None:
+        raise ValueError("Color cache entry is missing prompt_embeds")
+    return embeds, entry.get("attention_mask")
+
+
+def get_color_entry(color_cache: dict, brand: str):
+    return unpack_cache_entry(color_cache.get(brand, color_cache[_FALLBACK_BRAND]))
+
+
 class ImageFolderDataset(Dataset):
     def __init__(self, image_dir: str, resolution: int) -> None:
         self.image_paths = self._collect_image_paths(image_dir)
@@ -212,20 +227,33 @@ def main() -> None:
         with torch.cuda.amp.autocast(enabled=use_amp):
             # Blend CPU + GPU color embeddings: 4:6 ratio
             color_embs = []
+            color_masks = []
             for c in conditions_batch:
-                cpu_emb = color_cache.get(c.get("cpu_brand", _FALLBACK_BRAND),
-                                          color_cache[_FALLBACK_BRAND])
+                cpu_emb, cpu_mask = get_color_entry(color_cache, c.get("cpu_brand", _FALLBACK_BRAND))
                 gpu_brand = c.get("gpu_brand")
                 if gpu_brand:
-                    gpu_emb = color_cache.get(gpu_brand, color_cache[_FALLBACK_BRAND])
+                    gpu_emb, gpu_mask = get_color_entry(color_cache, gpu_brand)
                     blended = 0.4 * cpu_emb + 0.6 * gpu_emb
+                    mask = gpu_mask if gpu_mask is not None else cpu_mask
                 else:
                     blended = cpu_emb
+                    mask = cpu_mask
                 color_embs.append(blended.squeeze(0))  # (128, 4096)
+                if mask is None:
+                    mask = torch.ones(blended.shape[:2], dtype=torch.long)
+                color_masks.append(mask.squeeze(0))
             color_emb_batch = torch.stack(color_embs).to(device)  # (B, 128, 4096)
+            color_mask_batch = torch.stack(color_masks).to(device)  # (B, 128)
 
             cond = model.cond_encoder(conditions_batch, perf_index)
-            noise_pred = model.forward_with_cond(noisy_latents, timesteps, cond, color_emb_batch)
+            noise_pred = model.forward_with_cond(
+                noisy_latents,
+                timesteps,
+                cond,
+                color_emb_batch,
+                encoder_attention_mask=color_mask_batch,
+                added_cond_kwargs={"resolution": None, "aspect_ratio": None},
+            )
 
             # diffusion MSE loss
             loss = F.mse_loss(noise_pred, noise)

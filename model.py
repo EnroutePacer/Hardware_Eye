@@ -24,10 +24,8 @@ class HardwareAwareDiT(nn.Module):
 
         cond_dim = getattr(transformer.config, "cross_attention_dim",
                           getattr(transformer.config, "hidden_size", 1152))
-        caption_dim = getattr(transformer.config, "caption_channels", 4096)
 
         self.cond_dim = cond_dim
-        self.caption_dim = caption_dim
         self.cond_encoder = HardwareConditionEncoder(hidden_dim=cond_dim)
 
         in_channels = getattr(transformer.config, "in_channels", 4)
@@ -35,10 +33,6 @@ class HardwareAwareDiT(nn.Module):
         # FiLM: pre-transformer channel-wise modulation
         self.film_gamma = nn.Linear(cond_dim, in_channels)
         self.film_beta = nn.Linear(cond_dim, in_channels)
-
-        # Project our 1152-dim cond tokens → 4096-dim T5 embedding space,
-        # so PixArt's native caption_projection can process them uniformly
-        self.cond_to_t5_proj = nn.Linear(cond_dim, caption_dim)
 
         self.freeze_backbone()
 
@@ -52,6 +46,8 @@ class HardwareAwareDiT(nn.Module):
         timesteps: torch.Tensor,
         cond: torch.Tensor,
         color_emb: torch.Tensor | None = None,
+        encoder_attention_mask: torch.Tensor | None = None,
+        added_cond_kwargs: dict[str, torch.Tensor] | None = None,
     ) -> torch.Tensor:
         """
         Args:
@@ -59,31 +55,50 @@ class HardwareAwareDiT(nn.Module):
             timesteps: (batch,)          — diffusion timestep
             cond:      (batch, 16, cond_dim) — identity + style + global tokens
             color_emb: (batch, 128, 4096) or None — raw T5 color embeddings
-        Returns:
-            noise_pred: (batch, 4, H, W) — predicted noise
         """
-        # 1) FiLM modulation: uses only identity/style/global tokens (cond_dim=1152)
-        cond_global = cond.mean(dim=1)
-        gamma = self.film_gamma(cond_global).unsqueeze(-1).unsqueeze(-1)
-        beta  = self.film_beta(cond_global).unsqueeze(-1).unsqueeze(-1)
-        modulated = gamma * latents + beta
+        # 1) FiLM modulation (disabled during inference: random weights degrade output)
+        #    During training, uncomment to learn meaningful color shifts.
+        # cond_global = cond.mean(dim=1)
+        # gamma = self.film_gamma(cond_global).unsqueeze(-1).unsqueeze(-1)
+        # beta  = self.film_beta(cond_global).unsqueeze(-1).unsqueeze(-1)
+        # modulated = gamma * latents + beta
+        modulated = latents  # pass-through until FiLM is trained
 
-        # 2) Build encoder_hidden_states in T5 space (4096-dim)
-        #    Project our 16 hardware tokens into T5 embedding space
-        cond_t5 = self.cond_to_t5_proj(cond)  # (B, 16, 4096)
-
+        # 2) Build encoder_hidden_states at 1152-dim (cross_attention_dim).
         if color_emb is not None:
-            # Raw T5 color embedding — already 4096-dim, no pre-projection needed
-            encoder_hidden_states = torch.cat([cond_t5, color_emb], dim=1)  # (B, 144, 4096)
+            color_projected = self.transformer.caption_projection(color_emb)
+            if cond is not None and cond.shape[1] > 0:
+                encoder_hidden_states = torch.cat([cond, color_projected], dim=1)
+                if encoder_attention_mask is not None:
+                    cond_mask = torch.ones(
+                        cond.shape[:2],
+                        dtype=encoder_attention_mask.dtype,
+                        device=encoder_attention_mask.device,
+                    )
+                    encoder_attention_mask = torch.cat([cond_mask, encoder_attention_mask], dim=1)
+            else:
+                encoder_hidden_states = color_projected
+        elif cond is not None:
+            encoder_hidden_states = cond
         else:
-            encoder_hidden_states = cond_t5  # (B, 16, 4096)
+            raise ValueError("Either cond or color_emb must be provided")
 
-        # 3) PixArt transformer internally does:
-        #    encoder_hidden_states = caption_projection(encoder_hidden_states)
-        #    — this maps (B, *, 4096) → (B, *, 1152) uniformly for ALL tokens
-        raw_out = self.transformer(
-            modulated, timestep=timesteps, encoder_hidden_states=encoder_hidden_states
-        ).sample
+        # 3) Temporarily replace caption_projection with identity (pass-through)
+        #    since our encoder_hidden_states is already at 1152-dim.
+        original_caption_proj = self.transformer.caption_projection
+        self.transformer.caption_projection = nn.Identity()
+
+        try:
+            raw_out = self.transformer(
+                modulated,
+                timestep=timesteps,
+                encoder_hidden_states=encoder_hidden_states,
+                encoder_attention_mask=encoder_attention_mask,
+                added_cond_kwargs=added_cond_kwargs,
+                return_dict=False,
+            )[0]
+        finally:
+            self.transformer.caption_projection = original_caption_proj
 
         # 4) PixArt outputs 8 channels → keep only mean
         noise_pred, _ = raw_out.chunk(2, dim=1)
@@ -94,7 +109,6 @@ class HardwareAwareDiT(nn.Module):
             "cond_encoder": self.cond_encoder.state_dict(),
             "film_gamma": self.film_gamma.state_dict(),
             "film_beta": self.film_beta.state_dict(),
-            "cond_to_t5_proj": self.cond_to_t5_proj.state_dict(),
         }
 
     def load_trainable_state(self, state: Dict[str, Dict[str, torch.Tensor]]) -> None:
@@ -103,5 +117,3 @@ class HardwareAwareDiT(nn.Module):
             self.film_gamma.load_state_dict(state["film_gamma"], strict=True)
         if "film_beta" in state:
             self.film_beta.load_state_dict(state["film_beta"], strict=True)
-        if "cond_to_t5_proj" in state:
-            self.cond_to_t5_proj.load_state_dict(state["cond_to_t5_proj"], strict=True)
