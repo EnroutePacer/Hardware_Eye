@@ -3,6 +3,7 @@ Pre-compute final prompt_embeds per brand using PixArt's native encode_prompt().
 Run ONCE: python cache_generate.py
 Output: colorEmb_cache/brand_prompt_embeds.pt
 
+This will download the whole model on your pc, so don't run it unless neccessary.
 After this, generate.py can skip T5 entirely and pipe() with cached embeddings.
 """
 
@@ -14,12 +15,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 import torch
 from diffusers import PixArtSigmaPipeline
 
-SNAPSHOT_DIR = (
-    r"C:\Users\matebook\.cache\huggingface\hub"
-    r"\models--PixArt-alpha--PixArt-Sigma-XL-2-1024-MS"
-    r"\snapshots\e102b3591cc82e97071b8b4cb90d834d0c487207"
-)
-PIPELINE_PATH = SNAPSHOT_DIR
+PIPELINE_PATH = "PixArt-alpha/PixArt-Sigma-XL-2-1024-MS"
 OUTPUT_PATH   = os.path.join(os.path.dirname(__file__), "brand_style_embeds.pt")
 MAX_SEQ_LEN   = 300
 
@@ -34,6 +30,8 @@ BRAND_PROMPTS: dict[str, str] = {
 }
 
 NEGATIVE_PROMPT = "single color, single object"
+EMPTY_PROMPT    = ""
+LANDSCAPE_PROMPT = "landscape"
 
 
 def main() -> None:
@@ -61,6 +59,30 @@ def main() -> None:
         }
     }
 
+    # ── Landscape style direction: landscape - empty ──
+    print("Encoding empty prompt (baseline)...")
+    empty_embeds, empty_mask, _, _  = pipe.encode_prompt(
+        prompt=EMPTY_PROMPT, do_classifier_free_guidance=False, negative_prompt="",
+        num_images_per_prompt=1, device=device, clean_caption=False, max_sequence_length=MAX_SEQ_LEN,
+    )
+    # Save empty prompt as baseline for unconditional/dismiss mode
+    cache["_empty_"] = {
+        "prompt_embeds": empty_embeds.cpu(),
+        "prompt_mask":   empty_mask.cpu(),
+    }
+    print(f"  empty prompt  embeds={list(empty_embeds.shape)}  norm={empty_embeds.norm():.2f}")
+
+    print(f"Encoding landscape prompt: \"{LANDSCAPE_PROMPT}\"")
+    landscape_embeds, landscape_mask, _, _ = pipe.encode_prompt(
+        prompt=LANDSCAPE_PROMPT, do_classifier_free_guidance=False, negative_prompt="",
+        num_images_per_prompt=1, device=device, clean_caption=False, max_sequence_length=MAX_SEQ_LEN,
+    )
+    cache["_landscape_direction_"] = {
+        "prompt_embeds": landscape_embeds.cpu(),
+        "prompt_mask":   landscape_mask.cpu(),
+    }
+    print(f"  landscape direction  embeds={list(landscape_embeds.shape)}  norm={landscape_embeds.norm():.2f}")
+
     print(f"Encoding {len(BRAND_PROMPTS)} brand prompts...")
     with torch.no_grad():
         for brand, prompt in BRAND_PROMPTS.items():
@@ -87,7 +109,7 @@ def main() -> None:
         e = entry["prompt_embeds"]
         m = entry["prompt_mask"]
         print(f"  {key:14s}  embeds={list(e.shape)}  mask_tokens={int(m.sum())}")
-    print("Done. generate.py will load these directly.")
+    print("Done. generate.py will load these directly (no T5 needed at runtime).")
 
 
 if __name__ == "__main__":

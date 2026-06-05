@@ -2,27 +2,12 @@
 models/pixart_sigma/transformer/
 models/pixart_sigma/vae/
 models/pixart_sigma/scheduler/
-models/pixart_sigma/text_encoder/
-models/pixart_sigma/tokenizer/
-models/pixart_sigma/model_index.json
 
 # ── Generated outputs ──
 outputs/
 
-# ── Cached embeddings (regeneratable) ──
-colorEmb_cache/brand_style_embeds.pt
-colorEmb_cache/brand_color_embeddings.pt
-
 # ── Training checkpoints ──
 checkpoints/
-
-# ── Test artifacts ──
-test/debug_outputs/
-test/compare_outputs/
-test/fast_compare/
-test/rigorous_compare/
-test/color_test/
-test/clone_*.png
 
 # ── Python ──
 __pycache__/
