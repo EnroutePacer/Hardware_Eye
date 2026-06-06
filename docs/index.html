@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Hardware Eye</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    background: #0d0d0d; color: #e0e0e0;
+    display: flex; flex-direction: column; align-items: center;
+    min-height: 100vh; padding: 2rem 1rem;
+  }
+  h1 { font-size: 2rem; margin-bottom: 0.25rem; letter-spacing: -0.5px; }
+  .subtitle { color: #888; margin-bottom: 2rem; }
+  .card {
+    background: #1a1a1a; border: 1px solid #333;
+    border-radius: 12px; padding: 2rem;
+    max-width: 600px; width: 100%;
+    display: flex; flex-direction: column; align-items: center; gap: 1rem;
+  }
+  button {
+    padding: 0.75rem 2rem;
+    font-size: 1.1rem; font-weight: 600;
+    background: #6c5ce7; color: #fff;
+    border: none; border-radius: 8px; cursor: pointer;
+    transition: background 0.2s;
+  }
+  button:hover { background: #5a4bd1; }
+  button:disabled { background: #444; cursor: not-allowed; }
+  #result {
+    width: 100%; max-width: 512px;
+    border-radius: 8px; border: 1px solid #333;
+    display: none;
+  }
+  #info {
+    font-size: 0.85rem; color: #888; text-align: center;
+    display: none; line-height: 1.6;
+  }
+  #status { font-size: 0.85rem; color: #666; }
+  .spinner {
+    display: none;
+    width: 32px; height: 32px;
+    border: 3px solid #333; border-top-color: #6c5ce7;
+    border-radius: 50%; animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .error { color: #e74c3c; font-size: 0.9rem; display: none; }
+</style>
+</head>
+<body>
+
+<h1>&#x1F5A5; Hardware Eye</h1>
+<p class="subtitle">Your machine, visualised.</p>
+
+<div class="card">
+  <p id="status">Checking connection …</p>
+  <button id="genBtn" disabled>Generate</button>
+  <div class="spinner" id="spinner"></div>
+  <p class="error" id="error"></p>
+  <img id="result" alt="Generated image">
+  <p id="info"></p>
+</div>
+
+<script>
+const API = "http://127.0.0.1:8000";
+const genBtn = document.getElementById("genBtn");
+const spinner = document.getElementById("spinner");
+const errorEl = document.getElementById("error");
+const resultImg = document.getElementById("result");
+const infoEl = document.getElementById("info");
+const statusEl = document.getElementById("status");
+
+// check server on load
+(async () => {
+  try {
+    const r = await fetch(API + "/api/status");
+    const s = await r.json();
+    statusEl.textContent =
+      `Server ready  ·  perf=${s.perf_index.toFixed(3)}  ·  ${s.hw_profile.cpu_name}`;
+    genBtn.disabled = false;
+  } catch {
+    statusEl.textContent = "Cannot reach Hardware Eye server. Run: python server.py";
+  }
+})();
+
+genBtn.onclick = async () => {
+  genBtn.disabled = true;
+  spinner.style.display = "block";
+  errorEl.style.display = "none";
+  resultImg.style.display = "none";
+  infoEl.style.display = "none";
+
+  try {
+    const r = await fetch(API + "/api/generate", { method: "POST" });
+    if (!r.ok) throw new Error(`Server error: ${r.status}`);
+    const data = await r.json();
+
+    resultImg.src = "data:image/png;base64," + data.image_base64;
+    resultImg.style.display = "block";
+
+    infoEl.innerHTML =
+      `${data.cpu_brand}${data.gpu_brand ? " + " + data.gpu_brand : ""}  ·  ` +
+      `${data.resolution}px  ·  ${data.steps} steps  ·  cfg=${data.guidance_scale.toFixed(1)}  ·  ` +
+      `seed=${data.seed}  ·  perf=${data.perf_index.toFixed(3)}`;
+    infoEl.style.display = "block";
+  } catch (err) {
+    errorEl.textContent = err.message;
+    errorEl.style.display = "block";
+  } finally {
+    genBtn.disabled = false;
+    spinner.style.display = "none";
+  }
+};
+</script>
+
+</body>
+</html>

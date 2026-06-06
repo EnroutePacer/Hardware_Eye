@@ -4,6 +4,8 @@ import argparse
 import os
 import random
 from datetime import datetime
+from io import BytesIO
+from typing import Any
 
 import torch
 from diffusers import PixArtSigmaPipeline, Transformer2DModel, AutoencoderKL, DPMSolverMultistepScheduler
@@ -27,39 +29,15 @@ def load_prompt_cache() -> dict[str, dict[str, torch.Tensor]]:
     return torch.load(CACHE_PATH, map_location="cpu", weights_only=False)
 
 
-# ── main ─────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════
+#  pipeline context (initialised once, reused across calls)
+# ═══════════════════════════════════════════════════════════
 
-def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--config", default="config.yaml")
-    parser.add_argument("--seed", type=int, default=None)
-    parser.add_argument("--steps", type=int, default=None)
-    parser.add_argument("--guidance-scale", type=float, default=None,
-                        help="CFG scale (default: random")
-    parser.add_argument("--landscape", action="store_true", default=False,
-                        help="use landscape prompt instead of hardware brand")
-    parser.add_argument("--empty", action="store_true", default=False,
-                        help="use empty prompt (unconditional baseline)")
-    parser.add_argument("--no-negative", action="store_true", default=False,
-                        help="replace negative prompt with empty embedding")
-    parser.add_argument("--cpu-brand", type=str, default=None,
-                        choices=["intel", "amd", "apple", "qualcomm", "unknown"],
-                        help="override CPU brand")
-    parser.add_argument("--gpu-brand", type=str, default=None,
-                        choices=["nvidia", "amd", "intel", "apple", "qualcomm", "unknown"],
-                        help="override GPU brand")
-    args = parser.parse_args()
-
-    # guidance_scale: random (1.5, 5.0) if not explicitly set
-    guidance_scale = args.guidance_scale if args.guidance_scale is not None else random.uniform(0.1, 1.8)
-    print(f"guidance_scale: {guidance_scale:.2f}" + (" (random)" if args.guidance_scale is None else " (manual)"))
-
-    config_path = os.path.abspath(args.config)
+def init_pipeline(config_path: str = "config.yaml") -> dict[str, Any]:
+    """Load model + cache + hardware profile. Call once at startup."""
+    config_path = os.path.abspath(config_path)
     config_dir = os.path.dirname(config_path)
     config = load_config(config_path)
-
-    seed = choose_seed(config["generate"].get("seed"), args.seed)
-    seed_everything(seed)
 
     device = get_device()
     dtype = torch.float16 if device.type == "cuda" else torch.float32
@@ -81,9 +59,7 @@ def main() -> None:
         tokenizer=None,
     )
     pipe = pipe.to(device)
-    pipe.set_progress_bar_config(disable=False)
 
-    # ── benchmark & hardware-aware resolution / steps ──
     perf_index, avg_time = benchmark_device(
         pipe.transformer, device,
         ref_time=float(config["benchmark"]["ref_time"]),
@@ -91,19 +67,66 @@ def main() -> None:
         steps=int(config["benchmark"]["steps"]),
     )
 
+    prompt_cache = load_prompt_cache()
+    hw_profile = get_hardware_profile()
+
+    return {
+        "pipe": pipe,
+        "device": device,
+        "dtype": dtype,
+        "perf_index": perf_index,
+        "avg_time": avg_time,
+        "config": config,
+        "config_dir": config_dir,
+        "prompt_cache": prompt_cache,
+        "hw_profile": hw_profile,
+    }
+
+
+# ═══════════════════════════════════════════════════════════
+#  single generation
+# ═══════════════════════════════════════════════════════════
+
+def generate_image(
+    ctx: dict[str, Any],
+    *,
+    seed: int | None = None,
+    steps: int | None = None,
+    guidance_scale: float | None = None,
+    landscape: bool = False,
+    empty: bool = False,
+    no_negative: bool = False,
+    cpu_brand: str | None = None,
+    gpu_brand: str | None = None,
+) -> dict[str, Any]:
+    """Run one generation and return image bytes + metadata."""
+    config = ctx["config"]
+    pipe = ctx["pipe"]
+    device = ctx["device"]
+    dtype = ctx["dtype"]
+    perf_index = ctx["perf_index"]
+    prompt_cache = ctx["prompt_cache"]
+    hw_profile = ctx["hw_profile"]
+
+    # seed
+    seed = choose_seed(config["generate"].get("seed"), seed)
+    seed_everything(seed)
+
+    # guidance_scale
+    if guidance_scale is None:
+        guidance_scale = random.uniform(1.5, 5.0)
+
+    # resolution / steps / jitter
     res = get_resolution(
         perf_index,
         min_res=int(config["generate"]["min_res"]),
         max_res=int(config["generate"]["max_res"]),
     )
-    steps = args.steps if args.steps is not None else get_steps(
+    steps = steps if steps is not None else get_steps(
         perf_index,
         min_steps=int(config["generate"]["min_steps"]),
         max_steps=int(config["generate"]["max_steps"]),
     )
-    if steps <= 0:
-        raise ValueError("--steps must be greater than 0")
-
     jitter = pick_jitter(
         perf_index,
         low=float(config["generate"]["jitter_low"]),
@@ -111,98 +134,132 @@ def main() -> None:
         high=float(config["generate"]["jitter_high"]),
     )
 
-    hw_profile = get_hardware_profile()
     conditions = get_hardware_conditions(hw_profile, perf_index, jitter=jitter)
-    cpu_brand = conditions.get("cpu_brand", FALLBACK_BRAND)
-    gpu_brand = conditions.get("gpu_brand", FALLBACK_BRAND)
+    _cpu_brand = conditions.get("cpu_brand", FALLBACK_BRAND)
+    _gpu_brand = conditions.get("gpu_brand", FALLBACK_BRAND)
 
-    # CLI override
-    if args.cpu_brand:
-        cpu_brand = args.cpu_brand
-        print(f"CPU brand override: {cpu_brand}")
-    if args.gpu_brand:
-        gpu_brand = args.gpu_brand
-        print(f"GPU brand override: {gpu_brand}")
+    if cpu_brand:
+        _cpu_brand = cpu_brand
+    if gpu_brand:
+        _gpu_brand = gpu_brand
 
     color_rgb = conditions["color_rgb"]
-
-    # ── load cache & select prompt embedding ──
-    prompt_cache = load_prompt_cache()
     neg = prompt_cache["_negative_"]
 
-    if args.landscape:
+    # prompt selection
+    if landscape:
         entry = dict(prompt_cache["_landscape_direction_"])
-        print("Prompt: landscape")
-    elif args.empty:
+    elif empty:
         entry = dict(prompt_cache["_empty_"])
-        print("Prompt: empty (unconditional baseline)")
     else:
-        # Default brand mode: GPU preferred with tiny CPU blend for randomness
-        gpu_valid = gpu_brand and gpu_brand != "unknown" and gpu_brand in prompt_cache
-        cpu_brand = cpu_brand if cpu_brand in prompt_cache else FALLBACK_BRAND
+        gpu_valid = _gpu_brand and _gpu_brand != "unknown" and _gpu_brand in prompt_cache
+        _cpu_brand = _cpu_brand if _cpu_brand in prompt_cache else FALLBACK_BRAND
 
         if gpu_valid:
-            gpu_entry = prompt_cache[gpu_brand]
-            cpu_entry = prompt_cache[cpu_brand]
+            gpu_entry = prompt_cache[_gpu_brand]
+            cpu_entry = prompt_cache[_cpu_brand]
             entry = {
                 "prompt_embeds": 0.995 * gpu_entry["prompt_embeds"] + 0.005 * cpu_entry["prompt_embeds"],
                 "prompt_mask": (gpu_entry["prompt_mask"] + cpu_entry["prompt_mask"]).clamp(0, 1),
             }
-            print(f"Prompt: GPU={gpu_brand} + 0.5% CPU={cpu_brand}")
         else:
-            cpu_entry = prompt_cache[cpu_brand]
+            cpu_entry = prompt_cache[_cpu_brand]
             landscape_entry = prompt_cache["_landscape_direction_"]
             entry = {
                 "prompt_embeds": 0.995 * cpu_entry["prompt_embeds"] + 0.005 * landscape_entry["prompt_embeds"],
                 "prompt_mask": (cpu_entry["prompt_mask"] + landscape_entry["prompt_mask"]).clamp(0, 1),
             }
-            print(f"Prompt: CPU={cpu_brand} + 0.5% landscape")
 
     prompt_embeds   = entry["prompt_embeds"].to(device=device, dtype=dtype)
     prompt_mask     = entry["prompt_mask"].to(device=device)
     negative_embeds = neg["prompt_embeds"].to(device=device, dtype=dtype)
     negative_mask   = neg["prompt_mask"].to(device=device)
 
-    if args.no_negative:
+    if no_negative:
         empty_entry = prompt_cache["_empty_"]
         negative_embeds = empty_entry["prompt_embeds"].to(device=device, dtype=dtype)
         negative_mask   = empty_entry["prompt_mask"].to(device=device)
-        print("Negative: disabled (empty)")
 
-    # ── generate ──
+    # generate
     generator = torch.Generator(device=device).manual_seed(seed)
     result = pipe(
-        prompt=None,
-        negative_prompt=None,
-        prompt_embeds=prompt_embeds,
-        prompt_attention_mask=prompt_mask,
-        negative_prompt_embeds=negative_embeds,
-        negative_prompt_attention_mask=negative_mask,
-        num_inference_steps=steps,
-        guidance_scale=guidance_scale,
-        height=res,
-        width=res,
-        generator=generator,
-        output_type="pil",
+        prompt=None, negative_prompt=None,
+        prompt_embeds=prompt_embeds, prompt_attention_mask=prompt_mask,
+        negative_prompt_embeds=negative_embeds, negative_prompt_attention_mask=negative_mask,
+        num_inference_steps=steps, guidance_scale=guidance_scale,
+        height=res, width=res, generator=generator, output_type="pil",
     )
     image = result.images[0]
 
-    # ── save ──
-    output_dir = resolve_path(config["generate"]["output_dir"], config_dir)
+    # save to disk + return bytes
+    output_dir = resolve_path(config["generate"]["output_dir"], ctx["config_dir"])
     ensure_dir(output_dir)
     ts = datetime.now().strftime("%H-%M")
-    file_name = (
+    filename = (
         f"{ts}_seed-{seed}_steps-{steps}_cfg-{guidance_scale:.1f}"
-        f"_perf-{perf_index:.2f}({safe_name(cpu_brand)}_&_{safe_name(gpu_brand)}).png"
+        f"_perf-{perf_index:.2f}({safe_name(_cpu_brand)}_&_{safe_name(_gpu_brand)}).png"
     )
-    output_path = os.path.join(output_dir, file_name)
-    image.save(output_path)
+    filepath = os.path.join(output_dir, filename)
+    image.save(filepath)
 
-    print(f"Hardware: {hw_profile}")
-    print(f"Brands:  cpu={cpu_brand}  gpu={gpu_brand or 'none'}  rgb={color_rgb.tolist()}")
-    print(f"Shape:   embeds={tuple(prompt_embeds.shape)}  mask={tuple(prompt_mask.shape)}")
-    print(f"Params:  perf={perf_index:.3f}  res={res}x{res}  steps={steps}  seed={seed}  jitter={jitter:.3f}")
-    print(f"Saved:   {output_path}")
+    buf = BytesIO()
+    image.save(buf, format="PNG")
+
+    return {
+        "image_bytes": buf.getvalue(),
+        "filepath": filepath,
+        "cpu_brand": _cpu_brand,
+        "gpu_brand": _gpu_brand,
+        "color_rgb": color_rgb.tolist(),
+        "seed": seed,
+        "steps": steps,
+        "guidance_scale": guidance_scale,
+        "perf_index": perf_index,
+        "resolution": res,
+        "jitter": jitter,
+    }
+
+
+# ═══════════════════════════════════════════════════════════
+#  CLI entry point
+# ═══════════════════════════════════════════════════════════
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", default="config.yaml")
+    parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument("--steps", type=int, default=None)
+    parser.add_argument("--guidance-scale", type=float, default=None)
+    parser.add_argument("--landscape", action="store_true", default=False)
+    parser.add_argument("--empty", action="store_true", default=False)
+    parser.add_argument("--no-negative", action="store_true", default=False)
+    parser.add_argument("--cpu-brand", type=str, default=None,
+                        choices=["intel", "amd", "apple", "qualcomm", "unknown"])
+    parser.add_argument("--gpu-brand", type=str, default=None,
+                        choices=["nvidia", "amd", "intel", "apple", "qualcomm", "unknown"])
+    args = parser.parse_args()
+
+    print("Initialising pipeline …")
+    ctx = init_pipeline(args.config)
+
+    print(f"Generating (perf={ctx['perf_index']:.3f}) …")
+    result = generate_image(
+        ctx,
+        seed=args.seed,
+        steps=args.steps,
+        guidance_scale=args.guidance_scale,
+        landscape=args.landscape,
+        empty=args.empty,
+        no_negative=args.no_negative,
+        cpu_brand=args.cpu_brand,
+        gpu_brand=args.gpu_brand,
+    )
+
+    print(f"Hardware: {ctx['hw_profile']}")
+    print(f"Brands:  cpu={result['cpu_brand']}  gpu={result['gpu_brand'] or 'none'}  rgb={result['color_rgb']}")
+    print(f"Params:  perf={result['perf_index']:.3f}  res={result['resolution']}  "
+          f"steps={result['steps']}  seed={result['seed']}  jitter={result['jitter']:.3f}")
+    print(f"Saved:   {result['filepath']}")
 
 
 if __name__ == "__main__":
