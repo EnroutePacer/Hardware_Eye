@@ -1,7 +1,5 @@
-# ── Model weights (large binaries) ──
-models/pixart_sigma/transformer/
-models/pixart_sigma/vae/
-models/pixart_sigma/scheduler/
+# ── Model weights (auto-downloaded on first run) ──
+models/pixart_sigma/
 
 # ── Generated outputs ──
 outputs/

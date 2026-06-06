@@ -9,6 +9,7 @@ from typing import Any
 
 import torch
 from diffusers import PixArtSigmaPipeline, Transformer2DModel, AutoencoderKL, DPMSolverMultistepScheduler
+from huggingface_hub import snapshot_download
 
 from color_map import get_hardware_conditions
 from detect import get_device, get_hardware_profile
@@ -29,6 +30,28 @@ def load_prompt_cache() -> dict[str, dict[str, torch.Tensor]]:
     return torch.load(CACHE_PATH, map_location="cpu", weights_only=False)
 
 
+HF_PIPELINE_ID = "PixArt-alpha/PixArt-Sigma-XL-2-1024-MS"
+# Sub-folders we actually need (skip text_encoder, tokenizer — we use cached prompt embeds)
+HF_SUBFOLDERS = ["transformer", "vae", "scheduler"]
+
+
+def _ensure_models(pipeline_path: str) -> None:
+    """Download transformer/vae/scheduler from HuggingFace if not present locally."""
+    if os.path.isdir(os.path.join(pipeline_path, "transformer")):
+        return  # already present
+
+    print(f"Models not found at {pipeline_path} — downloading from HuggingFace …")
+    os.makedirs(pipeline_path, exist_ok=True)
+    for sub in HF_SUBFOLDERS:
+        snapshot_download(
+            HF_PIPELINE_ID,
+            allow_patterns=[f"{sub}/**"],
+            local_dir=pipeline_path,
+            local_dir_use_symlinks=False,
+        )
+    print("Download complete.")
+
+
 # ═══════════════════════════════════════════════════════════
 #  pipeline context (initialised once, reused across calls)
 # ═══════════════════════════════════════════════════════════
@@ -44,6 +67,8 @@ def init_pipeline(config_path: str = "config.yaml") -> dict[str, Any]:
     pipeline_path = resolve_path(
         config["model"].get("pipeline_path", DEFAULT_PIPELINE_PATH), config_dir,
     )
+
+    _ensure_models(pipeline_path)
 
     pipe = PixArtSigmaPipeline(
         transformer=Transformer2DModel.from_pretrained(
