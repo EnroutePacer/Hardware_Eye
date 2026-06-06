@@ -3,17 +3,17 @@ from __future__ import annotations
 import argparse
 import os
 import random
-import re
 from datetime import datetime
-from typing import Any
 
 import torch
-import yaml
 from diffusers import PixArtSigmaPipeline, Transformer2DModel, AutoencoderKL, DPMSolverMultistepScheduler
 
 from color_map import get_hardware_conditions
 from detect import get_device, get_hardware_profile
-from utils import benchmark_device, ensure_dir, get_resolution, get_steps, pick_jitter, seed_everything
+from utils import (
+    benchmark_device, choose_seed, ensure_dir, get_resolution, get_steps,
+    load_config, pick_jitter, resolve_path, safe_name, seed_everything,
+)
 
 BASE_DIR = os.path.dirname(__file__)
 DEFAULT_PIPELINE_PATH = os.path.join(BASE_DIR, "models", "pixart_sigma")
@@ -21,38 +21,9 @@ CACHE_PATH     = os.path.join(BASE_DIR, "colorEmb_cache", "brand_style_embeds.pt
 FALLBACK_BRAND = "unknown"
 
 
-# ── helpers ──────────────────────────────────────────────
-
-def load_config(path: str) -> dict[str, Any]:
-    with open(path, "r", encoding="utf-8") as handle:
-        return yaml.safe_load(handle)
-
-
-def resolve_path(path: str | None, base_dir: str) -> str | None:
-    if not path:
-        return None
-    return path if os.path.isabs(path) else os.path.join(base_dir, path)
-
-
-def safe_name(value: str | None) -> str:
-    value = value or "none"
-    return re.sub(r"[^a-zA-Z0-9_.-]+", "-", value).strip("-").lower() or "unknown"
-
-
-def choose_seed(config_seed: Any, cli_seed: int | None) -> int:
-    if cli_seed is not None:
-        return cli_seed
-    if config_seed is not None:
-        return int(config_seed)
-    return random.SystemRandom().randint(0, 2**31 - 1)
-
-
 def load_prompt_cache() -> dict[str, dict[str, torch.Tensor]]:
     if not os.path.exists(CACHE_PATH):
-        raise FileNotFoundError(
-            f"Cache not found at {CACHE_PATH}. "
-            "Run: python colorEmb_cache/cache_generate.py"
-        )
+        raise FileNotFoundError(f"Cache not found at {CACHE_PATH}. Run: python colorEmb_cache/cache_generate.py")
     return torch.load(CACHE_PATH, map_location="cpu", weights_only=False)
 
 
@@ -80,7 +51,7 @@ def main() -> None:
     args = parser.parse_args()
 
     # guidance_scale: random (1.5, 5.0) if not explicitly set
-    guidance_scale = args.guidance_scale if args.guidance_scale is not None else random.uniform(0.1, 2.5)
+    guidance_scale = args.guidance_scale if args.guidance_scale is not None else random.uniform(0.1, 1.8)
     print(f"guidance_scale: {guidance_scale:.2f}" + (" (random)" if args.guidance_scale is None else " (manual)"))
 
     config_path = os.path.abspath(args.config)

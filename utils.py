@@ -2,13 +2,42 @@ from __future__ import annotations
 
 import os
 import random
+import re
 import time
-from typing import Tuple
+from typing import Any, Tuple
 
 import numpy as np
 import torch
-from PIL import Image
+import yaml
 
+
+# ═══════════════════════════════════════════════
+#  config & path helpers
+# ═══════════════════════════════════════════════
+
+def load_config(path: str) -> dict[str, Any]:
+    with open(path, "r", encoding="utf-8") as handle:
+        return yaml.safe_load(handle)
+
+
+def resolve_path(path: str | None, base_dir: str) -> str | None:
+    if not path:
+        return None
+    return path if os.path.isabs(path) else os.path.join(base_dir, path)
+
+
+def safe_name(value: str | None) -> str:
+    value = value or "none"
+    return re.sub(r"[^a-zA-Z0-9_.-]+", "-", value).strip("-").lower() or "unknown"
+
+
+def ensure_dir(path: str) -> None:
+    os.makedirs(path, exist_ok=True)
+
+
+# ═══════════════════════════════════════════════
+#  seed
+# ═══════════════════════════════════════════════
 
 def seed_everything(seed: int) -> None:
     random.seed(seed)
@@ -18,12 +47,24 @@ def seed_everything(seed: int) -> None:
     np.random.seed(seed)
 
 
+def choose_seed(config_seed: Any, cli_seed: int | None) -> int:
+    if cli_seed is not None:
+        return cli_seed
+    if config_seed is not None:
+        return int(config_seed)
+    return random.SystemRandom().randint(0, 2**31 - 1)
+
+
+# ═══════════════════════════════════════════════
+#  hardware-aware resolution / steps
+# ═══════════════════════════════════════════════
+
 def nearest_multiple(value: int, base: int) -> int:
     return max(base, (value // base) * base)
 
 
 def get_resolution(
-    perf_index: float, min_res: int = 384, max_res: int = 1024, multiple: int = 64
+    perf_index: float, min_res: int = 384, max_res: int = 1024, multiple: int = 64,
 ) -> int:
     perf = max(0.0, min(1.0, perf_index))
     res = int(min_res + (max_res - min_res) * perf)
@@ -43,23 +84,9 @@ def pick_jitter(perf_index: float, low: float, mid: float, high: float) -> float
     return high
 
 
-def ensure_dir(path: str) -> None:
-    os.makedirs(path, exist_ok=True)
-
-
-def decode_latents(vae, latents: torch.Tensor) -> torch.Tensor:
-    if hasattr(vae, "config") and hasattr(vae.config, "scaling_factor"):
-        latents = latents / vae.config.scaling_factor
-    images = vae.decode(latents).sample
-    images = (images / 2 + 0.5).clamp(0, 1)
-    return images
-
-
-def tensor_to_pil(images: torch.Tensor) -> list[Image.Image]:
-    images = images.detach().cpu().permute(0, 2, 3, 1).numpy()
-    images = (images * 255).round().astype("uint8")
-    return [Image.fromarray(image) for image in images]
-
+# ═══════════════════════════════════════════════
+#  benchmark
+# ═══════════════════════════════════════════════
 
 def benchmark_device(
     model,
@@ -67,8 +94,6 @@ def benchmark_device(
     ref_time: float = 0.08,
     repeats: int = 3,
     steps: int = 100,
-    latent_size: int = 128,
-    cond_dim: int = 1152,
 ) -> Tuple[float, float]:
     """Lightweight matmul benchmark — fast, model-independent, differentiates CPU vs GPU."""
     model.eval()
