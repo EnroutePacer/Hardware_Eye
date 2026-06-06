@@ -21,15 +21,15 @@ MAX_SEQ_LEN   = 300
 
 # Each brand → a descriptive prompt. These get encoded ONCE and cached.
 BRAND_PROMPTS: dict[str, str] = {
-    "intel":     "random scene with partial blue and white tones",
-    "amd":       "random scene with partial red and orange tones",
-    "nvidia":    "random scene with partial neon green and black tones",
-    "apple":     "random scene with partial silver and white tones",
-    "qualcomm":  "random scene with partial blue and teal tones",
-    "unknown":   "random scene with balanced colors, neutral aesthetic",
+    "intel":     "a casual scene with partial blue and white elements",
+    "amd":       "a casual scene with partial red and orange elements",
+    "nvidia":    "a casual scene with partial neon green and black elements",
+    "apple":     "a casual scene with partial silver and white elements",
+    "qualcomm":  "a casual scene with partial blue and teal elements",
+    "unknown":   "a casual scene with balanced colors, neutral aesthetic",
 }
 
-NEGATIVE_PROMPT = "single color, single object"
+NEGATIVE_PROMPT = "uniform color"
 EMPTY_PROMPT    = ""
 LANDSCAPE_PROMPT = "landscape"
 
