@@ -3,7 +3,6 @@ from __future__ import annotations
 import colorsys
 import hashlib
 import random
-from typing import Iterable
 
 import torch
 
@@ -52,10 +51,6 @@ def _hash_to_color(key: str) -> tuple[float, float, float]:
     return r, g, b
 
 
-def get_brand_pool() -> Iterable[str]:
-    return list(HARDWARE_COLOR_MAP.keys())
-
-
 def get_base_color(brand_name: str | None) -> tuple[float, float, float]:
     brand = map_hardware_to_brand(brand_name) if brand_name else "unknown"
     return HARDWARE_COLOR_MAP.get(brand, _hash_to_color(brand))
@@ -83,30 +78,19 @@ def get_hardware_conditions(
 ) -> dict:
     cpu_name = hw_profile.get("cpu_name", "")
     gpu_name = hw_profile.get("gpu_name", "")
-    
-    # RGB color: still computed for color_loss supervision in training
+
+    # RGB color for hardware tint post-processing
     cpu_color = get_base_color(cpu_name)
     gpu_color = get_base_color(gpu_name) if gpu_name else cpu_color
     mixed = mix_colors(cpu_color, gpu_color, perf_index)
     final_color = apply_jitter(mixed, jitter)
-    
-    # Brand names for T5 embedding cache lookup (keyword-based extraction)
+
+    # Brand names for T5 embedding cache lookup
     cpu_brand = map_hardware_to_brand(cpu_name)
     gpu_brand = map_hardware_to_brand(gpu_name) if gpu_name else None
-    
-    # Hardware identity hash (unchanged)
-    identity_str = f"{cpu_name} {gpu_name}".strip()
-    identity_hash = int(hashlib.md5(identity_str.encode("utf-8")).hexdigest(), 16)
-    
-    # Style probability (unchanged)
-    landscape_prob = (identity_hash % 1000) / 1000.0
-    abstract_prob = 1.0 - landscape_prob
-    
+
     return {
-        "identity_hash": identity_hash,
         "cpu_brand": cpu_brand,
         "gpu_brand": gpu_brand,
         "color_rgb": torch.tensor(final_color, dtype=torch.float32),
-        "style_vector": torch.tensor([landscape_prob, abstract_prob], dtype=torch.float32),
-        "perf_index": perf_index
     }
