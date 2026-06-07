@@ -1,6 +1,16 @@
 # 🖥 Hardware Eye
 
 **Your machine, visualised.**  
+
+<img width="300" height="300" alt="image" src="https://github.com/user-attachments/assets/e02d16ac-51ac-4a54-8a55-7350c9c190ce" />
+<img width="300" height="300" alt="image" src="https://github.com/user-attachments/assets/3d603c84-f738-4ef7-b1f7-3019f5e01249" />
+<img width="300" height="300" alt="image" src="https://github.com/user-attachments/assets/ae56c8e8-dbbf-4373-9d63-e6fd156e1a79" />
+<img width="300" height="300" alt="image" src="https://github.com/user-attachments/assets/47d5abd4-081b-4b1c-aee0-70467f5aecda" />
+<img width="300" height="300" alt="image" src="https://github.com/user-attachments/assets/7684cc5d-563e-466c-970e-fba9ae86b0eb" />
+<img width="300" height="300" alt="image" src="https://github.com/user-attachments/assets/84eeb12a-f0f8-47b8-9976-263aac6bd070" />
+
+
+
 No text prompt. No labels. Just your hardware with its eye.
 
 Detects your own **CPU and GPU**, maps them to cached T5 prompt embeddings, and **generates a unique image** via the transformer of PixArt-Sigma — entirely on your own device.
