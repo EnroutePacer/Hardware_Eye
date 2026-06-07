@@ -6,8 +6,8 @@ generate:
   output_dir: "outputs"
   min_res: 512
   max_res: 1024
-  min_steps: 6
-  max_steps: 20
+  min_steps: 10
+  max_steps: 50
   jitter_low: 0.02
   jitter_mid: 0.05
   jitter_high: 0.10

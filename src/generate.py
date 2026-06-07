@@ -3,22 +3,27 @@ from __future__ import annotations
 import argparse
 import os
 import random
+import sys
 from datetime import datetime
 from io import BytesIO
 from typing import Any
 
+# ensure project root is on path (supports both `python src/generate.py` and `python -m src.generate`)
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import torch
 from diffusers import PixArtSigmaPipeline, Transformer2DModel, AutoencoderKL, DPMSolverMultistepScheduler
 from huggingface_hub import snapshot_download
+from PIL import Image
 
-from color_map import get_hardware_conditions
-from detect import get_device, get_hardware_profile
-from utils import (
+from src.color_map import get_hardware_conditions
+from src.detect import get_device, get_hardware_profile
+from src.utils import (
     benchmark_device, choose_seed, ensure_dir, get_resolution, get_steps,
     load_config, pick_jitter, resolve_path, safe_name, seed_everything,
 )
 
-BASE_DIR = os.path.dirname(__file__)
+BASE_DIR = os.path.dirname(os.path.dirname(__file__))  # project root (parent of src/)
 DEFAULT_PIPELINE_PATH = os.path.join(BASE_DIR, "models", "pixart_sigma")
 CACHE_PATH     = os.path.join(BASE_DIR, "colorEmb_cache", "brand_style_embeds.pt")
 FALLBACK_BRAND = "unknown"
@@ -123,6 +128,7 @@ def generate_image(
     no_negative: bool = False,
     cpu_brand: str | None = None,
     gpu_brand: str | None = None,
+    progress_callback = None,  # callable(stage, pct, msg)
 ) -> dict[str, Any]:
     """Run one generation and return image bytes + metadata."""
     config = ctx["config"]
@@ -139,7 +145,7 @@ def generate_image(
 
     # guidance_scale
     if guidance_scale is None:
-        guidance_scale = random.uniform(1.5, 5.0)
+        guidance_scale = random.uniform(0.05, 1.8)
 
     # resolution / steps / jitter
     res = get_resolution(
@@ -205,6 +211,20 @@ def generate_image(
         negative_embeds = empty_entry["prompt_embeds"].to(device=device, dtype=dtype)
         negative_mask   = empty_entry["prompt_mask"].to(device=device)
 
+    # progress: prep done
+    if progress_callback:
+        progress_callback("prep", 5, f"cfg={guidance_scale:.1f}  res={res}  steps={steps}")
+
+    # per-step callback (diffusers 0.38 signature: step, timestep, latents)
+    _on_step = None
+    if progress_callback:
+        _step_counter = [0]
+        def _on_step(i, t, latents):
+            _step_counter[0] += 1
+            pct = int(_step_counter[0] / steps * 100)
+            progress_callback("diffuse", pct, f"step {_step_counter[0]}/{steps}")
+
+
     # generate
     generator = torch.Generator(device=device).manual_seed(seed)
     result = pipe(
@@ -213,8 +233,18 @@ def generate_image(
         negative_prompt_embeds=negative_embeds, negative_prompt_attention_mask=negative_mask,
         num_inference_steps=steps, guidance_scale=guidance_scale,
         height=res, width=res, generator=generator, output_type="pil",
+        callback=_on_step,
+        callback_steps=1,
     )
     image = result.images[0]
+
+    if progress_callback:
+        progress_callback("post", 95, "applying hardware tint …")
+
+    # subtle hardware-color tint (jittered CPU+GPU brand colour → image post-process)
+    color_strength = 0.08
+    tint = Image.new("RGB", image.size, tuple(int(c * 255) for c in color_rgb))
+    image = Image.blend(image, tint, color_strength)
 
     # save to disk + return bytes
     output_dir = resolve_path(config["generate"]["output_dir"], ctx["config_dir"])
@@ -264,7 +294,7 @@ def main() -> None:
                         choices=["nvidia", "amd", "intel", "apple", "qualcomm", "unknown"])
     args = parser.parse_args()
 
-    print("Initialising pipeline …")
+    print("Initializing pipeline …")
     ctx = init_pipeline(args.config)
 
     print(f"Generating (perf={ctx['perf_index']:.3f}) …")

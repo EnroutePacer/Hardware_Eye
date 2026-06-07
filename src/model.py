@@ -6,7 +6,7 @@ import torch
 from diffusers import Transformer2DModel
 from torch import nn
 
-from cond_encoder import HardwareConditionEncoder
+from src.cond_encoder import HardwareConditionEncoder
 
 
 def load_pretrained_transformer(model_id: str, revision: str | None = None) -> Transformer2DModel:

@@ -23,11 +23,11 @@
   button {
     padding: 0.75rem 2rem;
     font-size: 1.1rem; font-weight: 600;
-    background: #6c5ce7; color: #fff;
+    background: #b7f9fed4; color: #fff;
     border: none; border-radius: 8px; cursor: pointer;
     transition: background 0.2s;
   }
-  button:hover { background: #5a4bd1; }
+  button:hover { background: #9bfffc; }
   button:disabled { background: #444; cursor: not-allowed; }
   #result {
     width: 100%; max-width: 512px;
@@ -47,6 +47,29 @@
   }
   @keyframes spin { to { transform: rotate(360deg); } }
   .error { color: #e74c3c; font-size: 0.9rem; display: none; }
+  .progress-wrap {
+    display: none; width: 100%; max-width: 350px;
+  }
+  .progress-row {
+    display: flex; align-items: center; gap: 10px;
+  }
+  .progress-bar {
+    flex: 1; height: 6px; background: #333; border-radius: 3px; overflow: hidden;
+  }
+  .progress-fill {
+    height: 100%; background: linear-gradient(90deg, #6c5ce7, #a29bfe);
+    width: 0%; border-radius: 3px; transition: width 0.3s ease;
+  }
+  .progress-pct {
+    font-size: 0.85rem; color: #a29bfe; min-width: 36px; text-align: right;
+    font-variant-numeric: tabular-nums;
+  }
+  .progress-text {
+    font-size: 0.8rem; color: #888; margin-top: 0.35rem;
+  }
+  .local-note {
+    text-align: center; font-size: 1.0rem; color: #f3fcfff6; margin-top: 0.5rem;
+  }
 </style>
 </head>
 <body>
@@ -57,7 +80,14 @@
 <div class="card">
   <p id="status">Checking connection …</p>
   <button id="genBtn" disabled>Generate</button>
-  <div class="spinner" id="spinner"></div>
+  <div class="progress-wrap" id="progressWrap">
+    <div class="progress-row">
+      <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
+      <div class="progress-pct" id="progressPct"></div>
+    </div>
+    <div class="progress-text" id="progressText"></div>
+    <div class="local-note"> running entirely on your hardware...</div>
+  </div>
   <p class="error" id="error"></p>
   <img id="result" alt="Generated image">
   <p id="info"></p>
@@ -71,6 +101,10 @@ const errorEl = document.getElementById("error");
 const resultImg = document.getElementById("result");
 const infoEl = document.getElementById("info");
 const statusEl = document.getElementById("status");
+const progressWrap = document.getElementById("progressWrap");
+const progressFill = document.getElementById("progressFill");
+const progressPct = document.getElementById("progressPct");
+const progressText = document.getElementById("progressText");
 
 // check server on load
 (async () => {
@@ -85,33 +119,53 @@ const statusEl = document.getElementById("status");
   }
 })();
 
-genBtn.onclick = async () => {
+genBtn.onclick = () => {
   genBtn.disabled = true;
-  spinner.style.display = "block";
-  errorEl.style.display = "none";
   resultImg.style.display = "none";
   infoEl.style.display = "none";
+  errorEl.style.display = "none";
+  progressWrap.style.display = "block";
+  progressFill.style.width = "0%";
+  progressText.textContent = "preparing …";
 
-  try {
-    const r = await fetch(API + "/api/generate", { method: "POST" });
-    if (!r.ok) throw new Error(`Server error: ${r.status}`);
-    const data = await r.json();
+  const evtSource = new EventSource(API + "/api/generate?" + new URLSearchParams({}));
 
-    resultImg.src = "data:image/png;base64," + data.image_base64;
+  evtSource.addEventListener("progress", (e) => {
+    const d = JSON.parse(e.data);
+    progressFill.style.width = d.pct + "%";
+    progressPct.textContent = d.pct + "%";
+    progressText.textContent = d.msg || "";
+  });
+
+  evtSource.addEventListener("done", (e) => {
+    const d = JSON.parse(e.data);
+    evtSource.close();
+    progressWrap.style.display = "none";
+
+    resultImg.src = "data:image/png;base64," + d.image_base64;
     resultImg.style.display = "block";
 
     infoEl.innerHTML =
-      `${data.cpu_brand}${data.gpu_brand ? " + " + data.gpu_brand : ""}  ·  ` +
-      `${data.resolution}px  ·  ${data.steps} steps  ·  cfg=${data.guidance_scale.toFixed(1)}  ·  ` +
-      `seed=${data.seed}  ·  perf=${data.perf_index.toFixed(3)}`;
+      `${d.cpu_brand}${d.gpu_brand ? " + " + d.gpu_brand : ""}  ·  ` +
+      `${d.resolution}px  ·  ${d.steps} steps  ·  cfg=${d.guidance_scale.toFixed(1)}  ·  ` +
+      `seed=${d.seed}  ·  perf=${d.perf_index.toFixed(3)}`;
     infoEl.style.display = "block";
-  } catch (err) {
-    errorEl.textContent = err.message;
-    errorEl.style.display = "block";
-  } finally {
     genBtn.disabled = false;
-    spinner.style.display = "none";
-  }
+  });
+
+  evtSource.addEventListener("error", (e) => {
+    try { const d = JSON.parse(e.data); errorEl.textContent = d.msg; } catch {}
+    errorEl.style.display = "block";
+    evtSource.close();
+    progressWrap.style.display = "none";
+    genBtn.disabled = false;
+  });
+
+  evtSource.onerror = () => {
+    evtSource.close();
+    progressWrap.style.display = "none";
+    genBtn.disabled = false;
+  };
 };
 </script>
 

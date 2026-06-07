@@ -29,7 +29,7 @@ BRAND_PROMPTS: dict[str, str] = {
     "unknown":   "a casual scene with balanced colors, neutral aesthetic",
 }
 
-NEGATIVE_PROMPT = "uniform color"
+NEGATIVE_PROMPT = "uniformed color"
 EMPTY_PROMPT    = ""
 LANDSCAPE_PROMPT = "landscape"
 
