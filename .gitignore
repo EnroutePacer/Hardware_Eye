@@ -15,7 +15,7 @@ __pycache__/
 dist/
 build/
 
-colorEmb_cache.cache_generate.py
+colorEmb_cache/cache_generate.py
 
 # ── IDE ──
 .vscode/
