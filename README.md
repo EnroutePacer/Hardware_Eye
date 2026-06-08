@@ -45,7 +45,7 @@ python src/generate.py --seed 42 --steps 12 --guidance-scale 3.0
 
 ## Architecture
 
-**Denoise-related factor :** brand style, 
+**Denoise-related factor :** hardware performance, brandname hash, brand style, color (jitter)
 ```
 detect.py                  color_map.py               generate.py
 ─────────                  ────────────               ───────────
