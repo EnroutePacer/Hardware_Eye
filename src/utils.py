@@ -44,6 +44,8 @@ def seed_everything(seed: int) -> None:
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
+    if torch.backends.mps.is_available():
+        torch.mps.manual_seed(seed)
     np.random.seed(seed)
 
 
@@ -104,11 +106,15 @@ def benchmark_device(
     for _ in range(repeats):
         if device.type == "cuda":
             torch.cuda.synchronize()
+        elif device.type == "mps":
+            torch.mps.synchronize()
         start = time.perf_counter()
         for _ in range(steps):
             torch.mm(a, b)
         if device.type == "cuda":
             torch.cuda.synchronize()
+        elif device.type == "mps":
+            torch.mps.synchronize()
         durations.append(time.perf_counter() - start)
     avg_time = sum(durations) / len(durations)
     perf_index = min(1.0, max(0.05, ref_time / max(avg_time, 1e-6)))
